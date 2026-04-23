@@ -25,14 +25,29 @@ RUN pip install --upgrade pip \
 
 # Configure default model (best-effort; ignored if config schema differs).
 RUN mkdir -p "$HERMES_HOME" \
- && hermes config set model.default anthropic/claude-opus-4-5 || true \
- && echo "GATEWAY_ALLOW_ALL_USERS=true" >> "$HERMES_HOME/.env"
+ && hermes config set model.default anthropic/claude-opus-4-5 || true
 
 WORKDIR /app
 COPY keepalive.py /app/keepalive.py
 
 EXPOSE 8080
 
-# Launch keepalive HTTP server alongside the Telegram gateway.
-# `exec` on the gateway makes it PID 1's foreground child so signals propagate.
-CMD ["sh", "-c", "trap 'kill 0' EXIT INT TERM; python /app/keepalive.py & cd /app/hermes-agent && exec hermes gateway run --accept-hooks"]
+# Entrypoint: read TELEGRAM_BOT_TOKEN and ANTHROPIC_API_KEY from the container
+# environment, fail fast if missing, write them into ~/.hermes/.env so the
+# hermes CLI picks them up, then run keepalive + the Telegram gateway as a
+# process group so signals propagate to both.
+CMD ["sh", "-c", "\
+set -eu; \
+: \"${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN env var is required}\"; \
+: \"${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY env var is required}\"; \
+mkdir -p \"$HERMES_HOME\"; \
+{ \
+  echo \"TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN\"; \
+  echo \"ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY\"; \
+  echo \"GATEWAY_ALLOW_ALL_USERS=${GATEWAY_ALLOW_ALL_USERS:-true}\"; \
+} > \"$HERMES_HOME/.env\"; \
+export TELEGRAM_BOT_TOKEN ANTHROPIC_API_KEY GATEWAY_ALLOW_ALL_USERS; \
+trap 'kill 0' EXIT INT TERM; \
+python /app/keepalive.py & \
+cd /app/hermes-agent && exec hermes gateway run --accept-hooks\
+"]
